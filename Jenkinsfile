@@ -13,31 +13,34 @@ pipeline {
       }
     }
 
-    // Build inside Maven+Temurin JDK 25 image, but DO NOT mount host ~/.m2
     stage('Build JAR') {
       agent {
         docker {
           image 'maven:3.9-eclipse-temurin-25'
-          // removed host $HOME/.m2 mount to avoid permission issues
-          // if you have a secure shared m2 cache, an admin can set it up with correct ownership
-          args '' 
+          // don't mount host ~/.m2 to avoid permission problems
+          args ''
         }
       }
+
+      // set MAVEN_OPTS so Maven uses a repo inside the workspace
       environment {
-        // set local repo to workspace so no write attempt to /root/.m2 occurs
-        MAVEN_OPTS = "-Dmaven.repo.local=${env.WORKSPACE}/.m2/repository"
+        MAVEN_OPTS = "-Dmaven.repo.local=${WORKSPACE}/.m2/repository"
       }
+
       steps {
+        // debug output (optional but useful)
+        sh 'echo "WORKSPACE=${WORKSPACE}  HOME=${HOME}" || true'
         sh 'java -version'
         sh 'mvn -v'
 
+        // run the wrapper but force HOME to the workspace so it won't try to create ///.m2
         sh 'chmod +x mvnw'
-        // the -Dmaven.repo.local (via MAVEN_OPTS above) ensures local repo is inside workspace
-        sh './mvnw -B clean package -DskipTests'
+        sh 'HOME=${WORKSPACE} ./mvnw -B clean package -DskipTests'
       }
-      // optional: stash the produced jar for later stages if needed
+
       post {
         success {
+          // keep the JAR as a build artifact
           archiveArtifacts artifacts: 'target/*.jar', fingerprint: true
         }
       }
