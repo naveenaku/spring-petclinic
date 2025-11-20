@@ -14,23 +14,22 @@ pipeline {
       }
     }
 
-    // Run the build inside a JDK 25 container so Maven Enforcer sees Java 25
+    // Use an image that includes BOTH Maven and Temurin JDK 25
     stage('Build JAR') {
-      // use a Temurin JDK 25 image for this stage
       agent {
         docker {
-          image 'eclipse-temurin:25-jdk'
-          // cache Maven repository between runs (optional)
-          args '-v $HOME/.m2:/root/.m2'
+          image 'maven:3.9-eclipse-temurin-25'   // Maven + JDK 25
+          args '-v $HOME/.m2:/root/.m2'         // cache Maven repo between runs (optional)
         }
       }
       steps {
-        // diagnostics (useful when debugging CI)
+        // diagnostics (will succeed because this image includes mvn)
         sh 'java -version'
         sh 'mvn -v'
 
-        // ensure wrapper is executable and build
+        // build using the wrapper (or 'mvn' directly)
         sh 'chmod +x mvnw'
+        // prefer the wrapper to keep consistent Maven version, but 'mvn' is available too
         sh './mvnw -B clean package -DskipTests'
       }
     }
