@@ -9,28 +9,37 @@ pipeline {
   stages {
     stage('Checkout Code') {
       steps {
-        // public repo: HTTPS is simplest
         git branch: 'main', url: 'https://github.com/naveenaku/spring-petclinic.git'
       }
     }
 
-    // Use an image that includes BOTH Maven and Temurin JDK 25
+    // Build inside Maven+Temurin JDK 25 image, but DO NOT mount host ~/.m2
     stage('Build JAR') {
       agent {
         docker {
-          image 'maven:3.9-eclipse-temurin-25'   // Maven + JDK 25
-          args '-v $HOME/.m2:/root/.m2'         // cache Maven repo between runs (optional)
+          image 'maven:3.9-eclipse-temurin-25'
+          // removed host $HOME/.m2 mount to avoid permission issues
+          // if you have a secure shared m2 cache, an admin can set it up with correct ownership
+          args '' 
         }
       }
+      environment {
+        // set local repo to workspace so no write attempt to /root/.m2 occurs
+        MAVEN_OPTS = "-Dmaven.repo.local=${env.WORKSPACE}/.m2/repository"
+      }
       steps {
-        // diagnostics (will succeed because this image includes mvn)
         sh 'java -version'
         sh 'mvn -v'
 
-        // build using the wrapper (or 'mvn' directly)
         sh 'chmod +x mvnw'
-        // prefer the wrapper to keep consistent Maven version, but 'mvn' is available too
+        // the -Dmaven.repo.local (via MAVEN_OPTS above) ensures local repo is inside workspace
         sh './mvnw -B clean package -DskipTests'
+      }
+      // optional: stash the produced jar for later stages if needed
+      post {
+        success {
+          archiveArtifacts artifacts: 'target/*.jar', fingerprint: true
+        }
       }
     }
 
