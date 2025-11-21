@@ -2,10 +2,9 @@ pipeline {
   agent any
 
   environment {
-    IMAGE_NAME   = "naveenakula029/nodejs"
-    IMAGE_TAG    = "latest"
-    MAVEN_IMAGE  = "maven:3.9.11-eclipse-temurin-25" // Maven + Temurin JDK 25
-    MVN_LOCAL_REPO = "${env.WORKSPACE}/.m2/repository"
+    IMAGE_NAME = "naveenakula029/nodejs"
+    IMAGE_TAG  = "latest"
+    MAVEN_IMAGE = "maven:3.9.11-eclipse-temurin-25"
   }
 
   stages {
@@ -15,56 +14,44 @@ pipeline {
       }
     }
 
-    stage('Prepare local m2') {
-      steps {
-        // Ensure workspace .m2 exists and is writable by the container user
-        sh '''
-          mkdir -p "${WORKSPACE}/.m2"
-          chmod -R 0777 "${WORKSPACE}/.m2" || true
-        '''
-      }
-    }
-
-    stage('Build JAR using Maven (JDK 25 container)') {
+    stage('Build JAR using Maven') {
       steps {
         script {
-          // Run Maven inside the selected Maven image which contains JDK 25.
-          // Note: using env.WORKSPACE to avoid Groovy interpolation issues.
-          docker.image(env.MAVEN_IMAGE).inside(
-            // mount workspace local repo into container's root .m2
-            // do NOT mount /var/run/docker.sock here unless you intentionally need docker inside container
-            "-v ${env.WORKSPACE}/.m2:/root/.m2 -e HOME=/root -u root"
+          // Ensure workspace .m2 exists and is writable
+          sh "mkdir -p ${WORKSPACE}/.m2 && chmod -R 777 ${WORKSPACE}/.m2 || true"
+
+          // Run Maven inside the official Maven image.
+          // Key points:
+          // - Mount workspace .m2 into container's /root/.m2 (Maven default)
+          // - Export HOME=/root inside the container to avoid Maven resolving HOME to '/'
+          // - Run mvn as root (-u root) to avoid UID mismatch permission issues
+          docker.image(MAVEN_IMAGE).inside(
+            // -v mount, set HOME env, run as root so mvn can write to /root/.m2
+            "-v ${WORKSPACE}/.m2:/root/.m2 -v /var/run/docker.sock:/var/run/docker.sock -e HOME=/root -u root"
           ) {
-            // Show which user and java/maven versions inside the container for debugging
-            sh '''
-              echo "=== inside build container ==="
-              whoami || true
-              id || true
-              java -version || true
-              mvn -v || true
-            '''
+            // debug output
+            sh 'echo "Inside container: whoami=$(whoami) HOME=$HOME"; id; ls -la /root || true'
+            sh 'java -version || true'
+            sh 'mvn -v'
 
-            // Use a workspace-local maven repo explicitly to be safe
-            sh '''
-              mvn -B -DskipTests -Dmaven.repo.local="${WORKSPACE}/.m2/repository" clean package
-            '''
-          } // end inside
-        } // end script
-      } // end steps
-
+            // Run mvn and explicitly set maven.repo.local as a fallback.
+            // This ensures Maven will use the workspace-local repo no matter what HOME is.
+            sh 'mvn -B -DskipTests -Dmaven.repo.local=${WORKSPACE}/.m2/repository clean package'
+          }
+        }
+      }
       post {
         success {
           archiveArtifacts artifacts: 'target/*.jar', fingerprint: true
         }
       }
-    } // end Build stage
+    }
 
     stage('Build Docker Image') {
       steps {
-        // This runs on the agent (not inside the maven container).
-        sh '''
+        sh """
           docker build -t ${IMAGE_NAME}:${IMAGE_TAG} .
-        '''
+        """
       }
     }
 
@@ -75,15 +62,15 @@ pipeline {
           usernameVariable: 'DOCKERHUB_USR',
           passwordVariable: 'DOCKERHUB_PSW'
         )]) {
-          sh '''
+          sh """
             echo "$DOCKERHUB_PSW" | docker login -u "$DOCKERHUB_USR" --password-stdin
             docker push ${IMAGE_NAME}:${IMAGE_TAG}
             docker logout
-          '''
+          """
         }
       }
     }
-  } // end stages
+  }
 
   post {
     success {
