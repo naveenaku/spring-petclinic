@@ -14,18 +14,29 @@ pipeline {
       }
     }
 
-    stage('Build JAR') {
+    stage('Build JAR using Maven') {
       steps {
         script {
-          // Use the official Maven image (includes JDK 25). Run Maven inside the container.
-          // Mount workspace .m2 into the container to cache dependencies and avoid permission issues.
-          // Mount docker.sock so we can build images later on the same agent (optional but useful).
-          docker.image(MAVEN_IMAGE).inside("-v ${env.WORKSPACE}/.m2:${env.HOME}/.m2 -v /var/run/docker.sock:/var/run/docker.sock") {
-            sh 'echo "Container Java & Maven versions:"'
+          // Ensure workspace .m2 exists and is writable
+          sh "mkdir -p ${WORKSPACE}/.m2 && chmod -R 777 ${WORKSPACE}/.m2 || true"
+
+          // Run Maven inside the official Maven image.
+          // Key points:
+          // - Mount workspace .m2 into container's /root/.m2 (Maven default)
+          // - Export HOME=/root inside the container to avoid Maven resolving HOME to '/'
+          // - Run mvn as root (-u root) to avoid UID mismatch permission issues
+          docker.image(MAVEN_IMAGE).inside(
+            // -v mount, set HOME env, run as root so mvn can write to /root/.m2
+            "-v ${WORKSPACE}/.m2:/root/.m2 -v /var/run/docker.sock:/var/run/docker.sock -e HOME=/root -u root"
+          ) {
+            // debug output
+            sh 'echo "Inside container: whoami=$(whoami) HOME=$HOME"; id; ls -la /root || true'
             sh 'java -version || true'
             sh 'mvn -v'
-            // Use mvn from the image (safer than relying on repo's mvnw)
-            sh 'mvn -B -DskipTests clean package'
+
+            // Run mvn and explicitly set maven.repo.local as a fallback.
+            // This ensures Maven will use the workspace-local repo no matter what HOME is.
+            sh 'mvn -B -DskipTests -Dmaven.repo.local=${WORKSPACE}/.m2/repository clean package'
           }
         }
       }
@@ -38,30 +49,35 @@ pipeline {
 
     stage('Build Docker Image') {
       steps {
-        script {
-          // Build docker image on the node (requires Docker daemon and permission)
-          def img = docker.build("${IMAGE_NAME}:${IMAGE_TAG}")
-          // tag also (optional)
-          sh "docker image ls ${IMAGE_NAME}:${IMAGE_TAG}"
-        }
+        sh """
+          docker build -t ${IMAGE_NAME}:${IMAGE_TAG} .
+        """
       }
     }
 
     stage('Login & Push to Docker Hub') {
       steps {
-        script {
-          // Uses Jenkins credential id 'Dockerhub-creds' (username/password)
-          docker.withRegistry('', 'Dockerhub-creds') {
-            // Push the previously built image
-            docker.image("${IMAGE_NAME}:${IMAGE_TAG}").push()
-          }
+        withCredentials([usernamePassword(
+          credentialsId: 'Dockerhub-creds',
+          usernameVariable: 'DOCKERHUB_USR',
+          passwordVariable: 'DOCKERHUB_PSW'
+        )]) {
+          sh """
+            echo "$DOCKERHUB_PSW" | docker login -u "$DOCKERHUB_USR" --password-stdin
+            docker push ${IMAGE_NAME}:${IMAGE_TAG}
+            docker logout
+          """
         }
       }
     }
   }
 
   post {
-    success { echo "Pipeline succeeded" }
-    failure { echo "Pipeline failed — check console" }
+    success {
+      echo "Pipeline succeeded 🎉"
+    }
+    failure {
+      echo "Pipeline failed — check console ❌"
+    }
   }
 }
